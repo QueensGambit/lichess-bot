@@ -21,13 +21,24 @@ from requests.exceptions import ChunkedEncodingError, ConnectionError, HTTPError
 from urllib3.exceptions import ProtocolError
 from ColorLogger import enable_color_logging
 
+logger = logging.getLogger(__name__)
+
 try:
     from http.client import RemoteDisconnected
     # New in version 3.5: Previously, BadStatusLine('') was raised.
 except ImportError:
     from http.client import BadStatusLine as RemoteDisconnected
 
-__version__ = "1.1.0"
+__version__ = "1.1.4"
+
+terminated = False
+
+def signal_handler(signal, frame):
+    global terminated
+    logger.debug("Recieved SIGINT. Terminating client.")
+    terminated = True
+
+signal.signal(signal.SIGINT, signal_handler)
 
 def is_final(exception):
     return isinstance(exception, HTTPError) and exception.response.status_code < 500
@@ -52,23 +63,14 @@ def watch_control_stream(control_queue, li):
     except (RemoteDisconnected, ChunkedEncodingError, ConnectionError, ProtocolError) as exception:
         logger.error("Terminating client due to connection error")
         traceback.print_exception(type(exception), exception, exception.__traceback__)
-        sys.exit()
-
-terminated = False
-
-def signal_handler(signal, frame):
-    global terminated
-    logger.debug("Recieved SIGINT. Terminating client.")
-    terminated = True
-
-signal.signal(signal.SIGINT, signal_handler)
+        control_queue.put_nowait({"type": "terminated"})
 
 def start(li, user_profile, engine_factory, config):
     challenge_config = config["challenge"]
     max_games = challenge_config.get("concurrency", 1)
     logger.info("You're now connected to {} and awaiting challenges.".format(config["url"]))
     manager = multiprocessing.Manager()
-    challenge_queue = []
+    challenge_queue = manager.list()
     control_queue = manager.Queue()
     control_stream = multiprocessing.Process(target=watch_control_stream, args=[control_queue, li])
     control_stream.start()
@@ -78,7 +80,9 @@ def start(li, user_profile, engine_factory, config):
     with logging_pool.LoggingPool(max_games+1) as pool:
         while not terminated:
             event = control_queue.get()
-            if event["type"] == "local_game_done":
+            if event["type"] == "terminated":
+                break
+            elif event["type"] == "local_game_done":
                 busy_processes -= 1
                 logger.info("+++ Process Free. Total Queued: {}. Total Used: {}".format(queued_processes, busy_processes))
             elif event["type"] == "challenge":
@@ -86,7 +90,9 @@ def start(li, user_profile, engine_factory, config):
                 if chlng.is_supported(challenge_config):
                     challenge_queue.append(chlng)
                     if (challenge_config.get("sort_by", "best") == "best"):
-                        challenge_queue.sort(key=lambda c: -c.score())
+                        list_c = list(challenge_queue)
+                        list_c.sort(key=lambda c: -c.score())
+                        challenge_queue = list_c
                 else:
                     try:
                         li.decline_challenge(chlng.id)
@@ -100,7 +106,7 @@ def start(li, user_profile, engine_factory, config):
                 else:
                     queued_processes -= 1
                 game_id = event["game"]["id"]
-                pool.apply_async(play_game, [li, game_id, control_queue, engine_factory, user_profile, config])
+                pool.apply_async(play_game, [li, game_id, control_queue, engine_factory, user_profile, config, challenge_queue])
                 busy_processes += 1
                 logger.info("--- Process Used. Total Queued: {}. Total Used: {}".format(queued_processes, busy_processes))
             while ((queued_processes + busy_processes) < max_games and challenge_queue): # keep processing the queue until empty or max_games is reached
@@ -120,7 +126,7 @@ def start(li, user_profile, engine_factory, config):
     control_stream.join()
 
 @backoff.on_exception(backoff.expo, BaseException, max_time=600, giveup=is_final)
-def play_game(li, game_id, control_queue, engine_factory, user_profile, config):
+def play_game(li, game_id, control_queue, engine_factory, user_profile, config, challenge_queue):
     response = li.get_game_stream(game_id)
     lines = response.iter_lines()
 
@@ -128,7 +134,7 @@ def play_game(li, game_id, control_queue, engine_factory, user_profile, config):
     game = model.Game(json.loads(next(lines).decode('utf-8')), user_profile["username"], li.baseUrl, config.get("abort_time", 20))
     board = setup_board(game)
     engine = engine_factory(board)
-    conversation = Conversation(game, engine, li, __version__)
+    conversation = Conversation(game, engine, li, __version__, challenge_queue)
 
     logger.info("+++ {}".format(game))
 
@@ -276,7 +282,6 @@ def intro():
     """ % __version__
 
 if __name__ == "__main__":
-    enable_color_logging(logging.INFO)
     parser = argparse.ArgumentParser(description='Play on Lichess with a bot')
     parser.add_argument('-u', action='store_true', help='Add this flag to upgrade your account to a bot account.')
     parser.add_argument('-v', action='store_true', help='Verbose output. Changes log level from INFO to DEBUG.')
@@ -284,10 +289,10 @@ if __name__ == "__main__":
     parser.add_argument('-l', '--logfile', help="Log file to append logs to.", default=None)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG if args.v else logging.INFO, filename=args.logfile, format="%(asctime)-15s: %(message)s")
-    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.DEBUG if args.v else logging.INFO, filename=args.logfile,
+                        format="%(asctime)-15s: %(message)s")
+    enable_color_logging(debug_lvl=logging.DEBUG if args.v else logging.INFO)
     logger.info(intro())
-
     CONFIG = load_config(args.config or "./config.yml")
     li = lichess.Lichess(CONFIG["token"], CONFIG["url"], __version__)
 

@@ -40,7 +40,7 @@ pip install -r requirements.txt
 ## Lichess OAuth
 - Create an account for your bot on [Lichess.org](https://lichess.org/signup)
 - NOTE: If you have previously played games on an existing account, you will not be able to use it as a bot account
-- Once your account has been created and you are logged in, [create a personal OAuth2 token](https://lichess.org/account/oauth/token) with the "Play bot moves" selected and add a description
+- Once your account has been created and you are logged in, [create a personal OAuth2 token](https://lichess.org/account/oauth/token/create) with the "Play as a bot" selected and add a description
 - A `token` e.g. `Xb0ddNrLabc0lGK2` will be displayed. Store this in `config.yml` as the `token` field
 - NOTE: You won't see this token again on Lichess.
 
@@ -60,15 +60,20 @@ pip install -r requirements.txt
 - It may take some time to quit
 
 ## LeelaChessZero
+
 - Download the weights for the id you want to play from here: http://lczero.org/networks
 - Extract the weights from the zip archive and rename it to `latest.txt`
 - For Windows, download the lczero binary from https://github.com/glinscott/leela-chess/releases
 - For Mac/Linux, build the lczero binary yourself following [LeelaChessZero/lc0/README](https://github.com/LeelaChessZero/lc0/blob/master/README.md)
 - Copy both the files into the `engine.dir` directory
-- Change the `engine.name` and `engine.weights` keys in config.yml to `lczero` (`lczero.exe` for Windows)  and `latest.txt`
-- You can specify the number of `engine.threads` in the config.yml file as well
+- Change the `engine.name` and `engine.engine_options.weights` keys in config.yml to `lczero` (`lczero.exe` for Windows)  and `weights.pb.gz`
+- You can specify the number of `engine.uci_options.threads` in the config.yml file as well
 - To start: `python lichess-bot.py`
 
+## For Docker
+
+Use https://github.com/vochicong/lc0-nvidia-docker to easily run lc0 and lichess-bot
+inside a Docker container.
 
 ## Tips & Tricks
 - You can specify a different config file with the `--config` argument.
